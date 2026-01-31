@@ -125,16 +125,16 @@ Create a minimal HTML/JS client for testing:
 
 #### 5.1 Modal Secrets
 ```bash
-modal secret create huggingface-secret HF_TOKEN=<your-token>
+uv run modal secret create huggingface-secret HF_TOKEN=<your-token>
 ```
 
 #### 5.2 Running the App
 ```bash
 # For development/testing (recommended - stops on Ctrl+C)
-modal serve personaplex.py
+uv run modal serve personaplex.py
 
 # For persistent deployment (only when ready for production)
-modal deploy personaplex.py
+uv run modal deploy personaplex.py
 ```
 
 #### 5.3 GPU Selection
@@ -161,8 +161,8 @@ modal deploy personaplex.py
 - **Purpose**: Deploy and run the application
 - **How to get**:
   1. Sign up at https://modal.com
-  2. Install CLI: `pip install modal`
-  3. Authenticate: `modal token new`
+  2. Install dependencies: `uv sync`
+  3. Authenticate: `uv run modal token new`
 - **Cost**: Pay-as-you-go; A10G ~$0.60/hr when running
 
 ### 3. NVIDIA NGC Token (Optional)
@@ -206,27 +206,27 @@ Modal containers **automatically shut down** after a period of inactivity:
 
 ```bash
 # Deploy the app (creates the endpoint, doesn't start containers)
-modal deploy personaplex.py
+uv run modal deploy personaplex.py
 
 # Check what's running
-modal app list
+uv run modal app list
 
 # View logs
-modal app logs personaplex
+uv run modal app logs personaplex
 
 # Stop the app entirely (removes endpoint)
-modal app stop personaplex
+uv run modal app stop personaplex
 
 # Delete the app
-modal app delete personaplex
+uv run modal app delete personaplex
 ```
 
 ### Cost-Efficient Testing Strategy
 
-1. **Development**: Use `modal serve personaplex.py` (hot-reload, stops when you Ctrl+C)
-2. **Testing**: Use `modal deploy` with short `container_idle_timeout` (e.g., 60s)
+1. **Development**: Use `uv run modal serve personaplex.py` (hot-reload, stops when you Ctrl+C)
+2. **Testing**: Use `uv run modal deploy` with short `container_idle_timeout` (e.g., 60s)
 3. **Demo**: Increase timeout to 300s to avoid cold starts during demo
-4. **Not using it?**: Run `modal app stop personaplex` to remove the endpoint
+4. **Not using it?**: Run `uv run modal app stop personaplex` to remove the endpoint
 
 ### Estimated Costs for Testing
 

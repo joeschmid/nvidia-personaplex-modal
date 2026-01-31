@@ -12,6 +12,9 @@ env/
 dist/
 build/
 
+# uv
+uv.lock
+
 # IDE
 .idea/
 .vscode/

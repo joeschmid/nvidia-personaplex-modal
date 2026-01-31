@@ -1,0 +1,19 @@
+[project]
+name = "personaplex-modal"
+version = "0.1.0"
+description = "PersonaPlex voice-to-voice AI deployed on Modal Labs"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "modal>=0.64.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.1.0",
+]
+
+[tool.uv]
+dev-dependencies = [
+    "ruff>=0.1.0",
+]

@@ -23,21 +23,21 @@ Built on NVIDIA's [PersonaPlex](https://github.com/NVIDIA/personaplex) model - a
 ### Setup
 
 ```bash
-# Install Modal CLI
-pip install modal
+# Install dependencies with uv
+uv sync
 
 # Authenticate with Modal
-modal token new
+uv run modal token new
 
 # Create HuggingFace secret (get token from huggingface.co/settings/tokens)
-modal secret create huggingface-secret HF_TOKEN=hf_your_token_here
+uv run modal secret create huggingface-secret HF_TOKEN=hf_your_token_here
 ```
 
 ### Run Locally (Development)
 
 ```bash
 # Start the server (stops on Ctrl+C)
-modal serve personaplex.py
+uv run modal serve personaplex.py
 ```
 
 The server will print a URL like `https://your-username--personaplex-....modal.run`. Open this in your browser.
@@ -46,7 +46,7 @@ The server will print a URL like `https://your-username--personaplex-....modal.r
 
 ```bash
 # Deploy to Modal (runs until you stop it)
-modal deploy personaplex.py
+uv run modal deploy personaplex.py
 ```
 
 ## Usage
@@ -93,6 +93,7 @@ Talk about technology, science, or whatever interests the user.
 ```
 v2v/
 ├── personaplex.py      # Main Modal application
+├── pyproject.toml      # Project config (uv)
 ├── static/
 │   └── index.html      # Web UI
 ├── PLAN.md             # Implementation plan
@@ -133,16 +134,16 @@ Modal charges only for active compute time:
 
 ```bash
 # Check running apps
-modal app list
+uv run modal app list
 
 # View logs
-modal app logs personaplex
+uv run modal app logs personaplex
 
 # Stop the app (removes endpoint)
-modal app stop personaplex
+uv run modal app stop personaplex
 
 # Delete the app
-modal app delete personaplex
+uv run modal app delete personaplex
 ```
 
 ## Configuration
