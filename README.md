@@ -154,8 +154,8 @@ uv run modal app delete personaplex
 Edit `personaplex.py` to customize:
 
 ```python
-# GPU type (A10G recommended for cost, A100 for performance)
-GPU_TYPE = "A10G"
+# GPU type (L40S recommended for cost, A100 for performance)
+GPU_TYPE = "L40S"
 
 # Container idle timeout (seconds before auto-shutdown)
 CONTAINER_IDLE_TIMEOUT = 300
