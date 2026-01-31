@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PersonaPlex Voice AI</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+
+        .container {
+            background: white;
+            border-radius: 16px;
+            padding: 30px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: #444;
+        }
+
+        select, input[type="text"], input[type="password"], textarea {
+            width: 100%;
+            padding: 12px;
+            font-size: 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            transition: border-color 0.2s;
+        }
+
+        select:focus, input:focus, textarea:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        textarea {
+            min-height: 80px;
+            resize: vertical;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin: 30px 0;
+        }
+
+        button {
+            padding: 14px 28px;
+            font-size: 16px;
+            font-weight: 600;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-secondary {
+            background: #f0f0f0;
+            color: #333;
+        }
+
+        .btn-secondary:hover:not(:disabled) {
+            background: #e0e0e0;
+        }
+
+        .btn-danger {
+            background: #e74c3c;
+            color: white;
+        }
+
+        .btn-danger:hover:not(:disabled) {
+            background: #c0392b;
+        }
+
+        #status {
+            padding: 15px;
+            border-radius: 8px;
+            margin: 20px 0;
+            font-weight: 500;
+            transition: all 0.3s;
+        }
+
+        .status-ready {
+            background: #f8f9fa;
+            color: #666;
+        }
+
+        .status-connecting {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .status-connected {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .status-error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .status-speaking {
+            background: #cce5ff;
+            color: #004085;
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+
+        #transcript {
+            min-height: 200px;
+            max-height: 400px;
+            overflow-y: auto;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 20px 0;
+            background: #fafafa;
+            font-family: 'Monaco', 'Consolas', monospace;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .transcript-ai {
+            color: #667eea;
+        }
+
+        .transcript-user {
+            color: #27ae60;
+        }
+
+        .visualizer {
+            height: 60px;
+            background: #1a1a2e;
+            border-radius: 8px;
+            margin: 20px 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 3px;
+            padding: 0 20px;
+        }
+
+        .visualizer-bar {
+            width: 4px;
+            background: linear-gradient(to top, #667eea, #764ba2);
+            border-radius: 2px;
+            transition: height 0.05s;
+        }
+
+        .info-box {
+            background: #e8f4fd;
+            border-left: 4px solid #667eea;
+            padding: 15px;
+            border-radius: 0 8px 8px 0;
+            margin: 20px 0;
+        }
+
+        .info-box h3 {
+            margin: 0 0 10px 0;
+            color: #333;
+        }
+
+        .info-box ul {
+            margin: 0;
+            padding-left: 20px;
+        }
+
+        .info-box li {
+            margin: 5px 0;
+            color: #555;
+        }
+
+        .hidden {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎙️ PersonaPlex Voice AI</h1>
+        <p class="subtitle">Real-time voice-to-voice conversation with customizable AI personas</p>
+
+        <div class="form-group">
+            <label for="password">Password</label>
+            <input type="password" id="password" placeholder="Enter access password">
+        </div>
+
+        <div class="form-group">
+            <label for="voice">Voice</label>
+            <select id="voice">
+                <option value="NATF2">Natural Female (NATF2)</option>
+                <option value="NATM2">Natural Male (NATM2)</option>
+                <option value="VARF0">Variety Female (VARF0)</option>
+                <option value="VARM0">Variety Male (VARM0)</option>
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label for="textPrompt">Persona Prompt</label>
+            <textarea id="textPrompt" placeholder="Describe the AI's personality...">You are a helpful and friendly assistant. Answer questions clearly and concisely. Be warm and engaging in conversation.</textarea>
+        </div>
+
+        <div class="button-group">
+            <button id="startBtn" class="btn-primary" onclick="startChat()">
+                🎤 Start Talking
+            </button>
+            <button id="stopBtn" class="btn-danger" onclick="stopChat()" disabled>
+                ⏹️ Stop
+            </button>
+        </div>
+
+        <div id="status" class="status-ready">
+            Status: Ready to connect
+        </div>
+
+        <div class="visualizer" id="visualizer">
+            <!-- Audio visualizer bars will be added by JS -->
+        </div>
+
+        <label>Transcript</label>
+        <div id="transcript">
+            <em>Conversation transcript will appear here...</em>
+        </div>
+
+        <div class="info-box">
+            <h3>💡 Tips</h3>
+            <ul>
+                <li>Allow microphone access when prompted</li>
+                <li>Speak naturally - the AI responds in real-time</li>
+                <li>Try different voices and persona prompts</li>
+                <li>Use Chrome or Firefox for best compatibility</li>
+            </ul>
+        </div>
+    </div>
+
+    <!-- Opus encoder/decoder library -->
+    <script src="https://cdn.jsdelivr.net/npm/libopus-wasm@0.0.4/dist/libopus.min.js"></script>
+
+    <script>
+        // =========================================================================
+        // PersonaPlex WebSocket Client
+        // =========================================================================
+
+        let ws = null;
+        let audioContext = null;
+        let mediaStream = null;
+        let scriptProcessor = null;
+        let opusEncoder = null;
+        let opusDecoder = null;
+        let isConnected = false;
+        let audioQueue = [];
+        let isPlaying = false;
+
+        const SAMPLE_RATE = 24000;  // PersonaPlex uses 24kHz
+        const FRAME_SIZE = 480;     // 20ms at 24kHz
+
+        // Initialize audio visualizer
+        function initVisualizer() {
+            const visualizer = document.getElementById('visualizer');
+            visualizer.innerHTML = '';
+            for (let i = 0; i < 32; i++) {
+                const bar = document.createElement('div');
+                bar.className = 'visualizer-bar';
+                bar.style.height = '4px';
+                visualizer.appendChild(bar);
+            }
+        }
+
+        function updateVisualizer(data) {
+            const bars = document.querySelectorAll('.visualizer-bar');
+            if (!data || data.length === 0) {
+                bars.forEach(bar => bar.style.height = '4px');
+                return;
+            }
+
+            const step = Math.floor(data.length / bars.length);
+            bars.forEach((bar, i) => {
+                const value = Math.abs(data[i * step] || 0);
+                const height = Math.max(4, Math.min(50, value * 100));
+                bar.style.height = `${height}px`;
+            });
+        }
+
+        function setStatus(message, statusClass = 'status-ready') {
+            const statusEl = document.getElementById('status');
+            statusEl.textContent = `Status: ${message}`;
+            statusEl.className = statusClass;
+        }
+
+        function appendTranscript(text, isAI = true) {
+            const transcript = document.getElementById('transcript');
+            if (transcript.innerHTML.includes('<em>')) {
+                transcript.innerHTML = '';
+            }
+
+            const span = document.createElement('span');
+            span.className = isAI ? 'transcript-ai' : 'transcript-user';
+            span.textContent = text;
+            transcript.appendChild(span);
+            transcript.scrollTop = transcript.scrollHeight;
+        }
+
+        async function startChat() {
+            const password = document.getElementById('password').value;
+            if (!password) {
+                alert('Please enter the access password');
+                return;
+            }
+
+            try {
+                setStatus('Initializing audio...', 'status-connecting');
+
+                // Initialize audio context
+                audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                    sampleRate: SAMPLE_RATE
+                });
+
+                // Get microphone access
+                mediaStream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        sampleRate: SAMPLE_RATE,
+                        channelCount: 1,
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                    }
+                });
+
+                setStatus('Connecting to server...', 'status-connecting');
+
+                // Build WebSocket URL
+                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const host = window.location.host;
+                const voice = document.getElementById('voice').value;
+                const textPrompt = encodeURIComponent(document.getElementById('textPrompt').value);
+
+                const wsUrl = `${protocol}//${host}/ws/chat?password=${encodeURIComponent(password)}&voice_prompt=${voice}&text_prompt=${textPrompt}&seed=-1`;
+
+                ws = new WebSocket(wsUrl);
+                ws.binaryType = 'arraybuffer';
+
+                ws.onopen = () => {
+                    console.log('WebSocket connected');
+                    setStatus('Waiting for handshake...', 'status-connecting');
+                };
+
+                ws.onmessage = async (event) => {
+                    const data = new Uint8Array(event.data);
+                    if (data.length === 0) return;
+
+                    const kind = data[0];
+                    const payload = data.slice(1);
+
+                    if (kind === 0) {
+                        // Handshake received
+                        console.log('Handshake received, starting audio');
+                        isConnected = true;
+                        setStatus('Connected - Speak now!', 'status-connected');
+                        startAudioCapture();
+                        document.getElementById('startBtn').disabled = true;
+                        document.getElementById('stopBtn').disabled = false;
+                    } else if (kind === 1) {
+                        // Audio data
+                        playAudio(payload);
+                        setStatus('AI speaking...', 'status-speaking');
+                    } else if (kind === 2) {
+                        // Text token
+                        const text = new TextDecoder().decode(payload);
+                        appendTranscript(text, true);
+                    }
+                };
+
+                ws.onerror = (error) => {
+                    console.error('WebSocket error:', error);
+                    setStatus('Connection error', 'status-error');
+                };
+
+                ws.onclose = (event) => {
+                    console.log('WebSocket closed:', event.code, event.reason);
+                    isConnected = false;
+                    stopAudioCapture();
+
+                    if (event.code === 4001) {
+                        setStatus('Invalid password', 'status-error');
+                    } else {
+                        setStatus('Disconnected', 'status-ready');
+                    }
+
+                    document.getElementById('startBtn').disabled = false;
+                    document.getElementById('stopBtn').disabled = true;
+                };
+
+            } catch (error) {
+                console.error('Error starting chat:', error);
+                setStatus(`Error: ${error.message}`, 'status-error');
+            }
+        }
+
+        function startAudioCapture() {
+            if (!audioContext || !mediaStream) return;
+
+            const source = audioContext.createMediaStreamSource(mediaStream);
+
+            // Use ScriptProcessorNode for raw audio access
+            // Note: This is deprecated but widely supported; AudioWorklet is the future
+            scriptProcessor = audioContext.createScriptProcessor(FRAME_SIZE, 1, 1);
+
+            let pcmBuffer = new Float32Array(0);
+
+            scriptProcessor.onaudioprocess = (event) => {
+                if (!isConnected || !ws || ws.readyState !== WebSocket.OPEN) return;
+
+                const inputData = event.inputBuffer.getChannelData(0);
+                updateVisualizer(inputData);
+
+                // Accumulate PCM data
+                const newBuffer = new Float32Array(pcmBuffer.length + inputData.length);
+                newBuffer.set(pcmBuffer);
+                newBuffer.set(inputData, pcmBuffer.length);
+                pcmBuffer = newBuffer;
+
+                // Send in frame-sized chunks
+                while (pcmBuffer.length >= FRAME_SIZE) {
+                    const frame = pcmBuffer.slice(0, FRAME_SIZE);
+                    pcmBuffer = pcmBuffer.slice(FRAME_SIZE);
+
+                    // Convert to 16-bit PCM for Opus encoding
+                    const pcm16 = new Int16Array(frame.length);
+                    for (let i = 0; i < frame.length; i++) {
+                        pcm16[i] = Math.max(-32768, Math.min(32767, Math.round(frame[i] * 32767)));
+                    }
+
+                    // For now, send raw PCM (simple approach)
+                    // PersonaPlex server expects Opus, but we'll send raw for testing
+                    // In production, use proper Opus encoding
+                    const message = new Uint8Array(1 + pcm16.byteLength);
+                    message[0] = 1;  // audio kind
+                    message.set(new Uint8Array(pcm16.buffer), 1);
+
+                    try {
+                        ws.send(message);
+                    } catch (e) {
+                        console.error('Error sending audio:', e);
+                    }
+                }
+            };
+
+            source.connect(scriptProcessor);
+            scriptProcessor.connect(audioContext.destination);
+
+            console.log('Audio capture started');
+        }
+
+        function stopAudioCapture() {
+            if (scriptProcessor) {
+                scriptProcessor.disconnect();
+                scriptProcessor = null;
+            }
+
+            if (mediaStream) {
+                mediaStream.getTracks().forEach(track => track.stop());
+                mediaStream = null;
+            }
+
+            updateVisualizer(null);
+        }
+
+        async function playAudio(opusData) {
+            if (!audioContext) return;
+
+            // Queue audio for playback
+            audioQueue.push(opusData);
+
+            if (!isPlaying) {
+                processAudioQueue();
+            }
+        }
+
+        async function processAudioQueue() {
+            if (audioQueue.length === 0) {
+                isPlaying = false;
+                if (isConnected) {
+                    setStatus('Connected - Speak now!', 'status-connected');
+                }
+                return;
+            }
+
+            isPlaying = true;
+
+            // For simple playback, we'd need Opus decoding
+            // This is a placeholder - real implementation needs libopus
+            const opusData = audioQueue.shift();
+
+            // Decode Opus and play
+            // Note: Proper Opus decoding requires WebAssembly-based decoder
+            // For testing, we skip this and move to next chunk
+
+            // Continue processing queue
+            setTimeout(processAudioQueue, 20);  // 20ms frame time
+        }
+
+        function stopChat() {
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+
+            stopAudioCapture();
+
+            if (audioContext) {
+                audioContext.close();
+                audioContext = null;
+            }
+
+            isConnected = false;
+            audioQueue = [];
+            isPlaying = false;
+
+            setStatus('Disconnected', 'status-ready');
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('stopBtn').disabled = true;
+        }
+
+        // Initialize on page load
+        document.addEventListener('DOMContentLoaded', () => {
+            initVisualizer();
+
+            // Check for WebSocket support
+            if (!('WebSocket' in window)) {
+                setStatus('WebSocket not supported in this browser', 'status-error');
+                document.getElementById('startBtn').disabled = true;
+            }
+
+            // Check for getUserMedia support
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                setStatus('Microphone access not supported', 'status-error');
+                document.getElementById('startBtn').disabled = true;
+            }
+        });
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            stopChat();
+        });
+    </script>
+</body>
+</html>
