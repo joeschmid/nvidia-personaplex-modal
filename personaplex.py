@@ -12,13 +12,21 @@ import os
 # ------------------------------------------------------------------------------
 
 APP_NAME = "personaplex"
-GPU_TYPE = "A10G"  # A10G-24GB, use cpu_offload if OOM
-CONTAINER_IDLE_TIMEOUT = 300  # 5 minutes
+GPU_TYPE = "L40S"  # L40S-48GB
+SCALEDOWN_WINDOW = 300  # 5 minutes
+MAX_CONTAINERS = 1  # Prevent autoscaling beyond a single container
 MODEL_CACHE_PATH = "/cache"
 VOICE_PROMPT_DIR = "/cache/voices"
 
-# Simple password auth (set in Modal secrets or here for testing)
-AUTH_PASSWORD = "REDACTED_PASSWORD"
+# Simple password auth (set via Modal secret or local env var)
+def _get_auth_password() -> str:
+    password = os.environ.get("AUTH_PASSWORD")
+    if not password:
+        raise RuntimeError(
+            "AUTH_PASSWORD env var not set. Create Modal secret "
+            "'personaplex-auth' with AUTH_PASSWORD or export it locally."
+        )
+    return password
 
 # Available voice presets (subset for MVP)
 VOICE_PRESETS = {
@@ -36,9 +44,12 @@ DEFAULT_TEXT_PROMPT = "You are a helpful assistant. Answer questions clearly and
 # ------------------------------------------------------------------------------
 
 image = (
+    # modal.Image.from_registry(
+    #     "nvcr.io/nvidia/cuda:12.4.1-runtime-ubuntu22.04",
+    #     add_python="3.11",
+    # )
     modal.Image.from_registry(
-        "nvcr.io/nvidia/cuda:12.4.1-runtime-ubuntu22.04",
-        add_python="3.11",
+        "nvidia/cuda:13.1.1-cudnn-devel-ubuntu22.04", add_python="3.12"
     )
     .apt_install(
         "libopus-dev",
@@ -71,7 +82,9 @@ image = (
     .env({
         "HF_HOME": MODEL_CACHE_PATH,
         "TORCH_HOME": MODEL_CACHE_PATH,
+        "HF_HUB_ENABLE_HF_TRANSFER": "1",
     })
+    .add_local_dir("static", "/app/static")
 )
 
 # ------------------------------------------------------------------------------
@@ -89,9 +102,13 @@ volume = modal.Volume.from_name("personaplex-cache", create_if_missing=True)
 @app.cls(
     gpu=GPU_TYPE,
     volumes={MODEL_CACHE_PATH: volume},
-    secrets=[modal.Secret.from_name("huggingface-secret")],
+    secrets=[
+        modal.Secret.from_name("huggingface-secret"),
+        modal.Secret.from_name("personaplex-auth"),
+    ],
     image=image,
-    container_idle_timeout=CONTAINER_IDLE_TIMEOUT,
+    scaledown_window=SCALEDOWN_WINDOW,
+    max_containers=MAX_CONTAINERS,
     timeout=600,  # 10 min max request time
 )
 class PersonaPlexService:
@@ -113,6 +130,8 @@ class PersonaPlexService:
         import asyncio
 
         print("Loading PersonaPlex models...")
+
+        self.auth_password = _get_auth_password()
 
         # Set device
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -215,30 +234,41 @@ class PersonaPlexService:
         from pathlib import Path
 
         fastapi_app = FastAPI(title="PersonaPlex Voice AI")
+        auth_password = getattr(self, "auth_password", None) or os.environ.get("AUTH_PASSWORD")
+        if not auth_password:
+            raise RuntimeError(
+                "AUTH_PASSWORD env var not set. Create Modal secret "
+                "'personaplex-auth' with AUTH_PASSWORD or export it locally."
+            )
 
         def check_auth(auth_cookie: str | None) -> bool:
             """Check if auth cookie is valid."""
             if auth_cookie is None:
                 return False
-            return secrets.compare_digest(auth_cookie, AUTH_PASSWORD)
+            return secrets.compare_digest(auth_cookie, auth_password)
 
         @fastapi_app.get("/")
         async def root(auth: str | None = Cookie(default=None)):
             """Serve the web UI or login page."""
             if not check_auth(auth):
                 return HTMLResponse(content=self._get_login_page())
-            static_dir = Path(__file__).parent / "static"
-            index_path = static_dir / "index.html"
+            # Static files are copied to /app/static in the container
+            index_path = Path("/app/static/index.html")
             if index_path.exists():
                 return HTMLResponse(content=index_path.read_text())
             return HTMLResponse(content=self._get_default_ui())
 
-        @fastapi_app.post("/login")
+        @fastapi_app.get("/login")
         async def login(password: str = Query(...)):
             """Handle login - set auth cookie if password is correct."""
-            if secrets.compare_digest(password, AUTH_PASSWORD):
+            if secrets.compare_digest(password, auth_password):
                 response = RedirectResponse(url="/", status_code=303)
-                response.set_cookie(key="auth", value=AUTH_PASSWORD, httponly=True, samesite="strict")
+                response.set_cookie(
+                    key="auth",
+                    value=auth_password,
+                    httponly=True,
+                    samesite="strict",
+                )
                 return response
             return HTMLResponse(content=self._get_login_page(error="Invalid password"), status_code=401)
 
@@ -249,10 +279,34 @@ class PersonaPlexService:
             response.delete_cookie(key="auth")
             return response
 
+        @fastapi_app.get("/favicon.ico")
+        async def favicon():
+            """Serve favicon."""
+            from fastapi.responses import FileResponse
+            icon_path = Path("/app/static/favicon.ico")
+            if icon_path.exists():
+                return FileResponse(icon_path)
+            raise HTTPException(status_code=404, detail="File not found")
+
         @fastapi_app.get("/health")
         async def health():
             """Health check endpoint."""
             return {"status": "healthy", "model": "personaplex"}
+
+        @fastapi_app.get("/static/{filename}")
+        async def static_files(filename: str):
+            """Serve static files (decoder worker, wasm, etc.)."""
+            from fastapi.responses import FileResponse
+            static_path = Path(f"/app/static/{filename}")
+            if static_path.exists():
+                # Set correct content type for wasm files
+                content_type = None
+                if filename.endswith('.wasm'):
+                    content_type = 'application/wasm'
+                elif filename.endswith('.js'):
+                    content_type = 'application/javascript'
+                return FileResponse(static_path, media_type=content_type)
+            raise HTTPException(status_code=404, detail="File not found")
 
         @fastapi_app.get("/voices")
         async def list_voices(auth: str | None = Cookie(default=None)):
@@ -281,7 +335,7 @@ class PersonaPlexService:
             """
             # Check auth cookie
             auth_cookie = websocket.cookies.get("auth")
-            if not auth_cookie or not secrets.compare_digest(auth_cookie, AUTH_PASSWORD):
+            if not auth_cookie or not secrets.compare_digest(auth_cookie, auth_password):
                 await websocket.close(code=4001, reason="Not authenticated")
                 return
 
@@ -379,7 +433,7 @@ class PersonaPlexService:
                         main_pcm = self.mimi.decode(tokens[:, 1:9])
                         _ = self.other_mimi.decode(tokens[:, 1:9])
                         main_pcm = main_pcm.cpu()
-                        opus_writer.append_pcm(main_pcm[0, 0].numpy())
+                        opus_writer.append_pcm(main_pcm[0, 0].detach().numpy())
 
                         # Send text tokens
                         text_token = tokens[0, 0, 0].item()
@@ -461,6 +515,7 @@ class PersonaPlexService:
     <title>PersonaPlex - Login</title>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="/favicon.ico">
     <style>
         body {{
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -542,6 +597,7 @@ class PersonaPlexService:
     <title>PersonaPlex Voice AI</title>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="/favicon.ico">
     <style>
         body { font-family: system-ui; max-width: 800px; margin: 0 auto; padding: 20px; }
         h1 { color: #333; }

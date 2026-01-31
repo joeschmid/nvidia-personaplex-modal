@@ -31,6 +31,9 @@ uv run modal token new
 
 # Create HuggingFace secret (get token from huggingface.co/settings/tokens)
 uv run modal secret create huggingface-secret HF_TOKEN=hf_your_token_here
+
+# Create auth secret for the web UI
+uv run modal secret create personaplex-auth AUTH_PASSWORD=your_password_here
 ```
 
 ### Run Locally (Development)
@@ -52,7 +55,7 @@ uv run modal deploy personaplex.py
 ## Usage
 
 1. Open the web UI in your browser
-2. Enter the password: `REDACTED_PASSWORD` on the login page
+2. Enter your configured password on the login page
 3. Select a voice preset
 4. Optionally customize the persona prompt
 5. Click "Start Talking" and allow microphone access
@@ -157,8 +160,8 @@ GPU_TYPE = "A10G"
 # Container idle timeout (seconds before auto-shutdown)
 CONTAINER_IDLE_TIMEOUT = 300
 
-# Access password
-AUTH_PASSWORD = "REDACTED_PASSWORD"
+# Access password (set via Modal secret or local env var)
+# AUTH_PASSWORD=your_password_here
 
 # Available voices
 VOICE_PRESETS = {
@@ -201,7 +204,6 @@ Connect with query parameters:
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `password` | string | Access password |
 | `voice_prompt` | string | Voice preset name (e.g., "NATF2") |
 | `text_prompt` | string | Persona system prompt |
 | `seed` | int | Random seed (-1 for random) |

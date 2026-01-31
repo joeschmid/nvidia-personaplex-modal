@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="/favicon.ico">
     <title>PersonaPlex Voice AI</title>
     <style>
         * {
@@ -179,6 +180,9 @@
 
         .transcript-user {
             color: #27ae60;
+            font-weight: 700;
+            display: block;
+            margin-top: 8px;
         }
 
         .visualizer {
@@ -221,6 +225,19 @@
         .info-box li {
             margin: 5px 0;
             color: #555;
+        }
+
+        .warning-box {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 15px;
+            border-radius: 0 8px 8px 0;
+            margin: 20px 0;
+        }
+
+        .warning-box p {
+            margin: 0;
+            color: #856404;
         }
 
         .hidden {
@@ -281,26 +298,32 @@
         </div>
     </div>
 
-    <!-- Opus encoder/decoder library -->
-    <script src="https://cdn.jsdelivr.net/npm/libopus-wasm@0.0.4/dist/libopus.min.js"></script>
+    <!-- Opus encoder (works in all browsers via WebAssembly) -->
+    <script src="https://cdn.jsdelivr.net/npm/opus-recorder@8.0.5/dist/recorder.min.js"></script>
+    <!-- Opus decoder uses a Web Worker from opus-recorder -->
 
     <script>
         // =========================================================================
-        // PersonaPlex WebSocket Client
+        // PersonaPlex WebSocket Client with Opus Audio
+        // Encoding: opus-recorder library (WebAssembly, works in all browsers)
+        // Decoding: opus-recorder decoderWorker (WebAssembly Web Worker)
+        // Based on NVIDIA PersonaPlex reference implementation
         // =========================================================================
 
         let ws = null;
         let audioContext = null;
         let mediaStream = null;
-        let scriptProcessor = null;
-        let opusEncoder = null;
-        let opusDecoder = null;
+        let analyserNode = null;
         let isConnected = false;
-        let audioQueue = [];
-        let isPlaying = false;
+        let opusRecorder = null;
+        let decoderWorker = null;
 
-        const SAMPLE_RATE = 24000;  // PersonaPlex uses 24kHz
-        const FRAME_SIZE = 480;     // 20ms at 24kHz
+        // PersonaPlex uses 24kHz sample rate
+        const SAMPLE_RATE = 24000;
+        const CHANNELS = 1;
+
+        // Audio playback queue
+        let nextPlayTime = 0;
 
         // Initialize audio visualizer
         function initVisualizer() {
@@ -314,19 +337,27 @@
             }
         }
 
-        function updateVisualizer(data) {
-            const bars = document.querySelectorAll('.visualizer-bar');
-            if (!data || data.length === 0) {
+        function updateVisualizerFromAnalyser() {
+            if (!analyserNode || !isConnected) {
+                const bars = document.querySelectorAll('.visualizer-bar');
                 bars.forEach(bar => bar.style.height = '4px');
                 return;
             }
 
-            const step = Math.floor(data.length / bars.length);
+            const dataArray = new Uint8Array(analyserNode.frequencyBinCount);
+            analyserNode.getByteFrequencyData(dataArray);
+
+            const bars = document.querySelectorAll('.visualizer-bar');
+            const step = Math.floor(dataArray.length / bars.length);
             bars.forEach((bar, i) => {
-                const value = Math.abs(data[i * step] || 0);
-                const height = Math.max(4, Math.min(50, value * 100));
+                const value = dataArray[i * step] / 255;
+                const height = Math.max(4, value * 50);
                 bar.style.height = `${height}px`;
             });
+
+            if (isConnected) {
+                requestAnimationFrame(updateVisualizerFromAnalyser);
+            }
         }
 
         function setStatus(message, statusClass = 'status-ready') {
@@ -348,24 +379,165 @@
             transcript.scrollTop = transcript.scrollHeight;
         }
 
+
+        // Create a warmup BOS (Beginning of Stream) page to initialize the decoder
+        // This is required by opus-recorder's decoder to set up internal buffers
+        function createWarmupBosPage() {
+            // OpusHead: "OpusHead" + version(1) + channels(1) + preskip(2) + samplerate(4) + gain(2) + mapping(1)
+            const opusHead = new Uint8Array([
+                0x4F, 0x70, 0x75, 0x73, 0x48, 0x65, 0x61, 0x64, // "OpusHead"
+                0x01,       // Version 1
+                0x01,       // 1 channel (mono)
+                0x38, 0x01, // Pre-skip: 312 samples (little-endian)
+                0x80, 0xBB, 0x00, 0x00, // Sample rate: 48000 Hz (little-endian)
+                0x00, 0x00, // Output gain: 0
+                0x00,       // Channel mapping: 0 (mono/stereo)
+            ]);
+
+            // Ogg page header
+            const pageHeader = new Uint8Array([
+                0x4F, 0x67, 0x67, 0x53, // "OggS" magic
+                0x00,       // Version 0
+                0x02,       // BOS flag (Beginning of Stream)
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Granule position: 0
+                0x01, 0x00, 0x00, 0x00, // Stream serial: 1
+                0x00, 0x00, 0x00, 0x00, // Page sequence: 0
+                0x00, 0x00, 0x00, 0x00, // CRC (decoder doesn't check)
+                0x01,       // 1 segment
+                0x13,       // Segment size: 19 bytes (OpusHead)
+            ]);
+
+            // Combine header and OpusHead
+            const bosPage = new Uint8Array(pageHeader.length + opusHead.length);
+            bosPage.set(pageHeader, 0);
+            bosPage.set(opusHead, pageHeader.length);
+
+            return bosPage;
+        }
+
+        async function initOpusDecoder() {
+            // Use opus-recorder's decoderWorker (same approach as NVIDIA PersonaPlex)
+            // Worker and WASM files are served from /static/
+            try {
+                decoderWorker = new Worker('/static/decoderWorker.min.js');
+
+                decoderWorker.onmessage = (e) => {
+                    // Worker sends decoded PCM data as an array of Float32Array(s)
+                    if (!e.data) return;
+                    if (Array.isArray(e.data)) {
+                        const mono = e.data[0];
+                        if (mono && mono.length > 0) {
+                            handleDecodedAudio(mono);
+                        }
+                        return;
+                    }
+                    if (e.data.length > 0) {
+                        handleDecodedAudio(e.data);
+                    }
+                };
+
+                decoderWorker.onerror = (e) => {
+                    console.error('Decoder worker error:', e);
+                };
+
+                // Initialize the decoder worker
+                // Opus internally decodes at 48kHz, then we resample to 24kHz for output
+                decoderWorker.postMessage({
+                    command: 'init',
+                    bufferLength: 4096,  // Larger buffer for smoother output
+                    decoderSampleRate: 48000,  // Opus always decodes at 48kHz
+                    outputBufferSampleRate: SAMPLE_RATE,  // Resample to 24kHz
+                    resampleQuality: 3,
+                });
+
+                console.log('opus-recorder decoderWorker initialized');
+
+                // Give worker time to initialize WASM
+                // The server will send proper Ogg BOS headers, so no need for warmup
+                await new Promise(resolve => setTimeout(resolve, 500));
+
+                return true;
+            } catch (e) {
+                console.error('Failed to init decoder worker:', e);
+                return false;
+            }
+        }
+
+        let audioPacketCount = 0;
+        let decodedPacketCount = 0;
+
+        function handleDecodedAudio(pcmData) {
+            // Called when decoder worker sends decoded PCM (Float32Array)
+            decodedPacketCount++;
+            if (decodedPacketCount <= 5) {
+                console.log(`Decoded audio packet #${decodedPacketCount}: samples=${pcmData?.length}`);
+            }
+            if (pcmData && pcmData.length > 0) {
+                playPCM(pcmData, SAMPLE_RATE);
+            }
+        }
+
+        function playPCM(pcmData, sampleRate = 48000) {
+            if (!audioContext || pcmData.length === 0) return;
+
+            // Create audio buffer at the decoded sample rate
+            // opus-stream-decoder outputs at 48kHz, AudioContext will resample automatically
+            const audioBuffer = audioContext.createBuffer(1, pcmData.length, sampleRate);
+            audioBuffer.getChannelData(0).set(pcmData);
+
+            const source = audioContext.createBufferSource();
+            source.buffer = audioBuffer;
+            source.connect(audioContext.destination);
+
+            // Schedule playback
+            const now = audioContext.currentTime;
+            if (nextPlayTime < now) {
+                nextPlayTime = now;
+            }
+
+            source.start(nextPlayTime);
+            nextPlayTime += audioBuffer.duration;
+
+            source.onended = () => {
+                if (!isConnected) return;
+                if (audioContext && audioContext.currentTime >= nextPlayTime - 0.1) {
+                    setStatus('Connected - Speak now!', 'status-connected');
+                }
+            };
+        }
+
         async function startChat() {
             try {
                 setStatus('Initializing audio...', 'status-connecting');
+
+                // Reset debug counters
+                audioPacketCount = 0;
+                decodedPacketCount = 0;
 
                 // Initialize audio context
                 audioContext = new (window.AudioContext || window.webkitAudioContext)({
                     sampleRate: SAMPLE_RATE
                 });
 
+                // Initialize Opus decoder
+                await initOpusDecoder();
+
                 // Get microphone access
                 mediaStream = await navigator.mediaDevices.getUserMedia({
                     audio: {
                         sampleRate: SAMPLE_RATE,
-                        channelCount: 1,
+                        channelCount: CHANNELS,
                         echoCancellation: true,
                         noiseSuppression: true,
+                        autoGainControl: true,
                     }
                 });
+
+                // Set up analyser for visualization
+                const source = audioContext.createMediaStreamSource(mediaStream);
+                analyserNode = audioContext.createAnalyser();
+                analyserNode.fftSize = 256;
+                source.connect(analyserNode);
 
                 setStatus('Connecting to server...', 'status-connecting');
 
@@ -394,20 +566,25 @@
 
                     if (kind === 0) {
                         // Handshake received
-                        console.log('Handshake received, starting audio');
+                        console.log('Handshake received, starting audio capture');
                         isConnected = true;
                         setStatus('Connected - Speak now!', 'status-connected');
-                        startAudioCapture();
+                        startOpusRecorder();
+                        updateVisualizerFromAnalyser();
                         document.getElementById('startBtn').disabled = true;
                         document.getElementById('stopBtn').disabled = false;
                     } else if (kind === 1) {
-                        // Audio data
-                        playAudio(payload);
-                        setStatus('AI speaking...', 'status-speaking');
+                        // Audio data (Opus encoded)
+                        handleIncomingAudio(payload);
                     } else if (kind === 2) {
                         // Text token
                         const text = new TextDecoder().decode(payload);
                         appendTranscript(text, true);
+                        setStatus('AI speaking...', 'status-speaking');
+                    } else if (kind === 3) {
+                        // User transcript text
+                        const text = new TextDecoder().decode(payload);
+                        appendTranscript(text, false);
                     }
                 };
 
@@ -419,10 +596,10 @@
                 ws.onclose = (event) => {
                     console.log('WebSocket closed:', event.code, event.reason);
                     isConnected = false;
-                    stopAudioCapture();
+                    stopOpusRecorder();
 
                     if (event.code === 4001) {
-                        setStatus('Invalid password', 'status-error');
+                        setStatus('Not authenticated - please login again', 'status-error');
                     } else {
                         setStatus('Disconnected', 'status-ready');
                     }
@@ -437,65 +614,65 @@
             }
         }
 
-        function startAudioCapture() {
-            if (!audioContext || !mediaStream) return;
+        function startOpusRecorder() {
+            if (!mediaStream) return;
 
-            const source = audioContext.createMediaStreamSource(mediaStream);
+            // Configure opus-recorder similar to NVIDIA PersonaPlex
+            // https://github.com/chris-rudmin/opus-recorder
+            const recorderConfig = {
+                encoderPath: 'https://cdn.jsdelivr.net/npm/opus-recorder@8.0.5/dist/encoderWorker.min.js',
+                encoderSampleRate: SAMPLE_RATE,
+                encoderFrameSize: 20,           // 20ms frames
+                maxFramesPerPage: 1,            // Send each frame immediately
+                numberOfChannels: CHANNELS,
+                encoderApplication: 2049,       // VOIP mode (2049) - optimized for speech
+                encoderComplexity: 0,           // Low complexity for speed
+                resampleQuality: 3,
+                streamPages: true,              // Stream as we record
+                sourceNode: audioContext.createMediaStreamSource(mediaStream),
+            };
 
-            // Use ScriptProcessorNode for raw audio access
-            // Note: This is deprecated but widely supported; AudioWorklet is the future
-            scriptProcessor = audioContext.createScriptProcessor(FRAME_SIZE, 1, 1);
+            console.log('Initializing opus-recorder with config:', recorderConfig);
 
-            let pcmBuffer = new Float32Array(0);
+            opusRecorder = new Recorder(recorderConfig);
 
-            scriptProcessor.onaudioprocess = (event) => {
+            opusRecorder.ondataavailable = (opusData) => {
                 if (!isConnected || !ws || ws.readyState !== WebSocket.OPEN) return;
 
-                const inputData = event.inputBuffer.getChannelData(0);
-                updateVisualizer(inputData);
+                // Build message: [0x01, ...opus_data]
+                const message = new Uint8Array(1 + opusData.length);
+                message[0] = 0x01;  // audio kind
+                message.set(opusData, 1);
 
-                // Accumulate PCM data
-                const newBuffer = new Float32Array(pcmBuffer.length + inputData.length);
-                newBuffer.set(pcmBuffer);
-                newBuffer.set(inputData, pcmBuffer.length);
-                pcmBuffer = newBuffer;
-
-                // Send in frame-sized chunks
-                while (pcmBuffer.length >= FRAME_SIZE) {
-                    const frame = pcmBuffer.slice(0, FRAME_SIZE);
-                    pcmBuffer = pcmBuffer.slice(FRAME_SIZE);
-
-                    // Convert to 16-bit PCM for Opus encoding
-                    const pcm16 = new Int16Array(frame.length);
-                    for (let i = 0; i < frame.length; i++) {
-                        pcm16[i] = Math.max(-32768, Math.min(32767, Math.round(frame[i] * 32767)));
-                    }
-
-                    // For now, send raw PCM (simple approach)
-                    // PersonaPlex server expects Opus, but we'll send raw for testing
-                    // In production, use proper Opus encoding
-                    const message = new Uint8Array(1 + pcm16.byteLength);
-                    message[0] = 1;  // audio kind
-                    message.set(new Uint8Array(pcm16.buffer), 1);
-
-                    try {
-                        ws.send(message);
-                    } catch (e) {
-                        console.error('Error sending audio:', e);
-                    }
+                try {
+                    ws.send(message);
+                } catch (e) {
+                    console.error('Error sending audio:', e);
                 }
             };
 
-            source.connect(scriptProcessor);
-            scriptProcessor.connect(audioContext.destination);
+            opusRecorder.onstart = () => {
+                console.log('Opus recorder started');
+            };
 
-            console.log('Audio capture started');
+            opusRecorder.onstop = () => {
+                console.log('Opus recorder stopped');
+            };
+
+            opusRecorder.start().catch(e => {
+                console.error('Failed to start opus recorder:', e);
+                setStatus('Failed to start audio recording', 'status-error');
+            });
         }
 
-        function stopAudioCapture() {
-            if (scriptProcessor) {
-                scriptProcessor.disconnect();
-                scriptProcessor = null;
+        function stopOpusRecorder() {
+            if (opusRecorder) {
+                try {
+                    opusRecorder.stop();
+                } catch (e) {
+                    console.error('Error stopping recorder:', e);
+                }
+                opusRecorder = null;
             }
 
             if (mediaStream) {
@@ -503,59 +680,70 @@
                 mediaStream = null;
             }
 
-            updateVisualizer(null);
+            analyserNode = null;
         }
 
-        async function playAudio(opusData) {
-            if (!audioContext) return;
+        function handleIncomingAudio(opusData) {
+            if (!audioContext || opusData.length === 0) return;
 
-            // Queue audio for playback
-            audioQueue.push(opusData);
+            audioPacketCount++;
+            if (audioPacketCount <= 10) {
+                // Check for OggS magic header and parse page info
+                const hasOggS = opusData.length >= 4 &&
+                    opusData[0] === 0x4F && opusData[1] === 0x67 &&
+                    opusData[2] === 0x67 && opusData[3] === 0x53;
 
-            if (!isPlaying) {
-                processAudioQueue();
-            }
-        }
-
-        async function processAudioQueue() {
-            if (audioQueue.length === 0) {
-                isPlaying = false;
-                if (isConnected) {
-                    setStatus('Connected - Speak now!', 'status-connected');
+                let pageInfo = '';
+                if (hasOggS && opusData.length >= 27) {
+                    const headerType = opusData[5];
+                    const pageIndex = opusData[18] | (opusData[19] << 8) | (opusData[20] << 16) | (opusData[21] << 24);
+                    const isBOS = (headerType & 2) !== 0;
+                    const isEOS = (headerType & 4) !== 0;
+                    pageInfo = ` headerType=${headerType}, pageIndex=${pageIndex}, BOS=${isBOS}, EOS=${isEOS}`;
                 }
-                return;
+                console.log(`Received audio packet #${audioPacketCount}: size=${opusData.length}, hasOggS=${hasOggS}${pageInfo}`);
             }
 
-            isPlaying = true;
-
-            // For simple playback, we'd need Opus decoding
-            // This is a placeholder - real implementation needs libopus
-            const opusData = audioQueue.shift();
-
-            // Decode Opus and play
-            // Note: Proper Opus decoding requires WebAssembly-based decoder
-            // For testing, we skip this and move to next chunk
-
-            // Continue processing queue
-            setTimeout(processAudioQueue, 20);  // 20ms frame time
+            // Send to decoder worker
+            if (decoderWorker) {
+                try {
+                    // Copy the data since we're transferring the buffer
+                    const dataCopy = new Uint8Array(opusData);
+                    decoderWorker.postMessage({
+                        command: 'decode',
+                        pages: dataCopy
+                    }, [dataCopy.buffer]);
+                } catch (e) {
+                    console.error('decoder worker error:', e);
+                }
+            } else {
+                console.warn('No decoder worker available to decode audio');
+            }
         }
 
         function stopChat() {
+            isConnected = false;
+
             if (ws) {
                 ws.close();
                 ws = null;
             }
 
-            stopAudioCapture();
+            stopOpusRecorder();
+
+            if (decoderWorker) {
+                try {
+                    decoderWorker.terminate();
+                } catch (e) {}
+                decoderWorker = null;
+            }
 
             if (audioContext) {
                 audioContext.close();
                 audioContext = null;
             }
 
-            isConnected = false;
-            audioQueue = [];
-            isPlaying = false;
+            nextPlayTime = 0;
 
             setStatus('Disconnected', 'status-ready');
             document.getElementById('startBtn').disabled = false;
@@ -577,6 +765,18 @@
                 setStatus('Microphone access not supported', 'status-error');
                 document.getElementById('startBtn').disabled = true;
             }
+
+            // Check for opus-recorder
+            if (typeof Recorder === 'undefined') {
+                console.error('opus-recorder not loaded!');
+                setStatus('Audio encoder not available', 'status-error');
+                document.getElementById('startBtn').disabled = true;
+            } else {
+                console.log('opus-recorder loaded successfully');
+            }
+
+            // Decoder worker will be created on demand
+            console.log('Decoder will use opus-recorder decoderWorker');
         });
 
         // Cleanup on page unload
