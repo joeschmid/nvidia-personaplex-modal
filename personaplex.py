@@ -228,9 +228,12 @@ class PersonaPlexService:
     @modal.asgi_app()
     def serve(self):
         """Create and return the FastAPI application."""
-        from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query, Cookie, Response
+        from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query, Cookie, Response, Form
         from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
         import secrets
+        import hashlib
+        import hmac
+        import time
         from pathlib import Path
 
         fastapi_app = FastAPI(title="PersonaPlex Voice AI")
@@ -241,11 +244,46 @@ class PersonaPlexService:
                 "'personaplex-auth' with AUTH_PASSWORD or export it locally."
             )
 
+        # Secret key for signing session tokens (in production, use a proper secret management)
+        session_secret = auth_password + "_session_secret_key"
+
+        def create_session_token() -> str:
+            """Create a signed session token."""
+            timestamp = str(int(time.time()))
+            # Create HMAC signature of timestamp
+            signature = hmac.new(
+                session_secret.encode(),
+                timestamp.encode(),
+                hashlib.sha256
+            ).hexdigest()
+            return f"{timestamp}:{signature}"
+
+        def verify_session_token(token: str) -> bool:
+            """Verify a session token is valid and not expired."""
+            if not token or ":" not in token:
+                return False
+            try:
+                timestamp, signature = token.split(":", 1)
+                # Verify signature
+                expected_signature = hmac.new(
+                    session_secret.encode(),
+                    timestamp.encode(),
+                    hashlib.sha256
+                ).hexdigest()
+                if not secrets.compare_digest(signature, expected_signature):
+                    return False
+                # Optional: Check if token is not too old (e.g., 24 hours)
+                token_age = int(time.time()) - int(timestamp)
+                max_age = 24 * 60 * 60  # 24 hours
+                return token_age < max_age
+            except (ValueError, TypeError):
+                return False
+
         def check_auth(auth_cookie: str | None) -> bool:
-            """Check if auth cookie is valid."""
+            """Check if auth cookie contains a valid session token."""
             if auth_cookie is None:
                 return False
-            return secrets.compare_digest(auth_cookie, auth_password)
+            return verify_session_token(auth_cookie)
 
         @fastapi_app.get("/")
         async def root(auth: str | None = Cookie(default=None)):
@@ -258,16 +296,19 @@ class PersonaPlexService:
                 return HTMLResponse(content=index_path.read_text())
             return HTMLResponse(content=self._get_default_ui())
 
-        @fastapi_app.get("/login")
-        async def login(password: str = Query(...)):
-            """Handle login - set auth cookie if password is correct."""
+        @fastapi_app.post("/login")
+        async def login(password: str = Form(...)):
+            """Handle login - set auth cookie with session token if password is correct."""
             if secrets.compare_digest(password, auth_password):
                 response = RedirectResponse(url="/", status_code=303)
+                session_token = create_session_token()
                 response.set_cookie(
                     key="auth",
-                    value=auth_password,
+                    value=session_token,
                     httponly=True,
+                    secure=True,
                     samesite="strict",
+                    max_age=24 * 60 * 60  # 24 hours
                 )
                 return response
             return HTMLResponse(content=self._get_login_page(error="Invalid password"), status_code=401)
@@ -335,7 +376,7 @@ class PersonaPlexService:
             """
             # Check auth cookie
             auth_cookie = websocket.cookies.get("auth")
-            if not auth_cookie or not secrets.compare_digest(auth_cookie, auth_password):
+            if not auth_cookie or not verify_session_token(auth_cookie):
                 await websocket.close(code=4001, reason="Not authenticated")
                 return
 
@@ -572,18 +613,11 @@ class PersonaPlexService:
         <h1>🎙️ PersonaPlex</h1>
         <p>Voice-to-voice AI</p>
         {error_html}
-        <form id="loginForm" onsubmit="login(event)">
-            <input type="password" id="password" placeholder="Enter password" required autofocus>
+        <form method="POST" action="/login">
+            <input type="password" name="password" placeholder="Enter password" required autofocus>
             <button type="submit">Sign In</button>
         </form>
     </div>
-    <script>
-        function login(e) {{
-            e.preventDefault();
-            const password = document.getElementById('password').value;
-            window.location.href = '/login?password=' + encodeURIComponent(password);
-        }}
-    </script>
 </body>
 </html>
 """
