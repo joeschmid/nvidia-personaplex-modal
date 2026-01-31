@@ -8,12 +8,7 @@ dependencies = [
     "modal>=0.64.0",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
-    "ruff>=0.1.0",
-]
-
-[tool.uv]
-dev-dependencies = [
     "ruff>=0.1.0",
 ]
