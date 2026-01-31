@@ -234,11 +234,6 @@
         <p class="subtitle">Real-time voice-to-voice conversation with customizable AI personas</p>
 
         <div class="form-group">
-            <label for="password">Password</label>
-            <input type="password" id="password" placeholder="Enter access password">
-        </div>
-
-        <div class="form-group">
             <label for="voice">Voice</label>
             <select id="voice">
                 <option value="NATF2">Natural Female (NATF2)</option>
@@ -354,12 +349,6 @@
         }
 
         async function startChat() {
-            const password = document.getElementById('password').value;
-            if (!password) {
-                alert('Please enter the access password');
-                return;
-            }
-
             try {
                 setStatus('Initializing audio...', 'status-connecting');
 
@@ -380,13 +369,13 @@
 
                 setStatus('Connecting to server...', 'status-connecting');
 
-                // Build WebSocket URL
+                // Build WebSocket URL (auth is handled by cookie)
                 const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
                 const host = window.location.host;
                 const voice = document.getElementById('voice').value;
                 const textPrompt = encodeURIComponent(document.getElementById('textPrompt').value);
 
-                const wsUrl = `${protocol}//${host}/ws/chat?password=${encodeURIComponent(password)}&voice_prompt=${voice}&text_prompt=${textPrompt}&seed=-1`;
+                const wsUrl = `${protocol}//${host}/ws/chat?voice_prompt=${voice}&text_prompt=${textPrompt}&seed=-1`;
 
                 ws = new WebSocket(wsUrl);
                 ws.binaryType = 'arraybuffer';

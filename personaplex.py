@@ -209,30 +209,45 @@ class PersonaPlexService:
     @modal.asgi_app()
     def serve(self):
         """Create and return the FastAPI application."""
-        from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, Query
-        from fastapi.responses import HTMLResponse, JSONResponse
-        from fastapi.staticfiles import StaticFiles
-        from fastapi.security import HTTPBasic, HTTPBasicCredentials
+        from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query, Cookie, Response
+        from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
         import secrets
         from pathlib import Path
 
         fastapi_app = FastAPI(title="PersonaPlex Voice AI")
-        security = HTTPBasic()
 
-        def verify_password(credentials: HTTPBasicCredentials = Depends(security)):
-            """Simple password verification."""
-            if not secrets.compare_digest(credentials.password, AUTH_PASSWORD):
-                raise HTTPException(status_code=401, detail="Invalid password")
-            return True
+        def check_auth(auth_cookie: str | None) -> bool:
+            """Check if auth cookie is valid."""
+            if auth_cookie is None:
+                return False
+            return secrets.compare_digest(auth_cookie, AUTH_PASSWORD)
 
         @fastapi_app.get("/")
-        async def root(authenticated: bool = Depends(verify_password)):
-            """Serve the web UI."""
+        async def root(auth: str | None = Cookie(default=None)):
+            """Serve the web UI or login page."""
+            if not check_auth(auth):
+                return HTMLResponse(content=self._get_login_page())
             static_dir = Path(__file__).parent / "static"
             index_path = static_dir / "index.html"
             if index_path.exists():
                 return HTMLResponse(content=index_path.read_text())
             return HTMLResponse(content=self._get_default_ui())
+
+        @fastapi_app.post("/login")
+        async def login(password: str = Query(...)):
+            """Handle login - set auth cookie if password is correct."""
+            if secrets.compare_digest(password, AUTH_PASSWORD):
+                response = RedirectResponse(url="/", status_code=303)
+                response.set_cookie(key="auth", value=AUTH_PASSWORD, httponly=True, samesite="strict")
+                return response
+            return HTMLResponse(content=self._get_login_page(error="Invalid password"), status_code=401)
+
+        @fastapi_app.get("/logout")
+        async def logout():
+            """Clear auth cookie."""
+            response = RedirectResponse(url="/", status_code=303)
+            response.delete_cookie(key="auth")
+            return response
 
         @fastapi_app.get("/health")
         async def health():
@@ -240,8 +255,10 @@ class PersonaPlexService:
             return {"status": "healthy", "model": "personaplex"}
 
         @fastapi_app.get("/voices")
-        async def list_voices(authenticated: bool = Depends(verify_password)):
+        async def list_voices(auth: str | None = Cookie(default=None)):
             """List available voice presets."""
+            if not check_auth(auth):
+                raise HTTPException(status_code=401, detail="Not authenticated")
             return JSONResponse(content={
                 "voices": list(VOICE_PRESETS.keys()),
                 "default": DEFAULT_VOICE,
@@ -250,7 +267,6 @@ class PersonaPlexService:
         @fastapi_app.websocket("/ws/chat")
         async def websocket_chat(
             websocket: WebSocket,
-            password: str = Query(...),
             voice_prompt: str = Query(default=DEFAULT_VOICE),
             text_prompt: str = Query(default=DEFAULT_TEXT_PROMPT),
             seed: int = Query(default=-1),
@@ -259,14 +275,14 @@ class PersonaPlexService:
             WebSocket endpoint for voice chat.
 
             Query params:
-            - password: Auth password
             - voice_prompt: Voice preset name (e.g., "NATF2")
             - text_prompt: System prompt for persona
             - seed: Random seed (-1 for random)
             """
-            # Verify password
-            if not secrets.compare_digest(password, AUTH_PASSWORD):
-                await websocket.close(code=4001, reason="Invalid password")
+            # Check auth cookie
+            auth_cookie = websocket.cookies.get("auth")
+            if not auth_cookie or not secrets.compare_digest(auth_cookie, AUTH_PASSWORD):
+                await websocket.close(code=4001, reason="Not authenticated")
                 return
 
             await websocket.accept()
@@ -434,6 +450,88 @@ class PersonaPlexService:
                     pass
 
             print("Chat session ended")
+
+    def _get_login_page(self, error: str | None = None):
+        """Return a simple login page."""
+        error_html = f'<p class="error">{error}</p>' if error else ''
+        return f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <title>PersonaPlex - Login</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0;
+        }}
+        .login-box {{
+            background: white;
+            padding: 40px;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            text-align: center;
+            max-width: 400px;
+            width: 90%;
+        }}
+        h1 {{ color: #333; margin-bottom: 10px; }}
+        p {{ color: #666; margin-bottom: 30px; }}
+        .error {{ color: #e74c3c; margin-bottom: 20px; }}
+        input[type="password"] {{
+            width: 100%;
+            padding: 14px;
+            font-size: 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-sizing: border-box;
+        }}
+        input[type="password"]:focus {{
+            outline: none;
+            border-color: #667eea;
+        }}
+        button {{
+            width: 100%;
+            padding: 14px;
+            font-size: 16px;
+            font-weight: 600;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+        }}
+        button:hover {{
+            opacity: 0.9;
+        }}
+    </style>
+</head>
+<body>
+    <div class="login-box">
+        <h1>🎙️ PersonaPlex</h1>
+        <p>Voice-to-voice AI</p>
+        {error_html}
+        <form id="loginForm" onsubmit="login(event)">
+            <input type="password" id="password" placeholder="Enter password" required autofocus>
+            <button type="submit">Sign In</button>
+        </form>
+    </div>
+    <script>
+        function login(e) {{
+            e.preventDefault();
+            const password = document.getElementById('password').value;
+            window.location.href = '/login?password=' + encodeURIComponent(password);
+        }}
+    </script>
+</body>
+</html>
+"""
 
     def _get_default_ui(self):
         """Return default HTML UI if static/index.html doesn't exist."""

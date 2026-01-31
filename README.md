@@ -52,7 +52,7 @@ uv run modal deploy personaplex.py
 ## Usage
 
 1. Open the web UI in your browser
-2. Enter the access password: `REDACTED_PASSWORD`
+2. Enter the password: `REDACTED_PASSWORD` on the login page
 3. Select a voice preset
 4. Optionally customize the persona prompt
 5. Click "Start Talking" and allow microphone access
