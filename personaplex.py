@@ -110,6 +110,7 @@ volume = modal.Volume.from_name("personaplex-cache", create_if_missing=True)
     scaledown_window=SCALEDOWN_WINDOW,
     max_containers=MAX_CONTAINERS,
     timeout=600,  # 10 min max request time
+    enable_memory_snapshot=True,  # Enable memory snapshots for faster cold starts
 )
 class PersonaPlexService:
     """
@@ -118,54 +119,57 @@ class PersonaPlexService:
     Handles model loading, WebSocket connections, and audio streaming.
     """
 
-    @modal.enter()
-    def load_models(self):
-        """Load models when container starts (runs once per container lifecycle)."""
+    @modal.enter(snap=True)
+    def load_models_cpu(self):
+        """
+        Load models to CPU - this state gets snapshotted.
+
+        This method runs BEFORE the snapshot is captured. By loading models
+        to CPU here, we avoid re-downloading and re-loading on every cold start.
+        The snapshot captures the CPU memory state with all models loaded.
+        """
         import torch
         import sentencepiece
         from huggingface_hub import hf_hub_download
         from moshi.models import loaders
         import tarfile
         from pathlib import Path
-        import asyncio
 
-        print("Loading PersonaPlex models...")
+        print("=" * 60)
+        print("SNAPSHOT PHASE: Loading models to CPU for snapshotting...")
+        print("=" * 60)
 
         self.auth_password = _get_auth_password()
 
-        # Set device
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"Using device: {self.device}")
+        # Use CPU for initial loading (will transfer to GPU after snapshot restore)
+        self.cpu_device = torch.device("cpu")
+        print(f"Loading models to: {self.cpu_device}")
 
         # HuggingFace repo for PersonaPlex
         hf_repo = loaders.DEFAULT_REPO
 
-        # Download and load Mimi audio codec
-        print("Loading Mimi audio codec...")
+        # Download and load Mimi audio codec to CPU
+        print("Loading Mimi audio codec to CPU...")
         mimi_weight = hf_hub_download(hf_repo, loaders.MIMI_NAME)
-        self.mimi = loaders.get_mimi(mimi_weight, self.device)
-        self.other_mimi = loaders.get_mimi(mimi_weight, self.device)
-        print("Mimi loaded")
+        self.mimi = loaders.get_mimi(mimi_weight, self.cpu_device)
+        self.other_mimi = loaders.get_mimi(mimi_weight, self.cpu_device)
+        print("Mimi loaded to CPU")
 
-        # Download and load text tokenizer
+        # Download and load text tokenizer (CPU-only, no change needed)
         print("Loading text tokenizer...")
         tokenizer_path = hf_hub_download(hf_repo, loaders.TEXT_TOKENIZER_NAME)
         self.text_tokenizer = sentencepiece.SentencePieceProcessor(tokenizer_path)
         print("Tokenizer loaded")
 
-        # Download and load Moshi language model
-        print("Loading Moshi language model (this may take a while)...")
+        # Download and load Moshi language model to CPU
+        print("Loading Moshi language model to CPU (this may take a while)...")
         moshi_weight = hf_hub_download(hf_repo, loaders.MOSHI_NAME)
-        # Try with cpu_offload for A10G
-        try:
-            self.lm = loaders.get_moshi_lm(moshi_weight, device=self.device, cpu_offload=True)
-        except Exception as e:
-            print(f"CPU offload failed, trying without: {e}")
-            self.lm = loaders.get_moshi_lm(moshi_weight, device=self.device, cpu_offload=False)
+        # Load to CPU without offload (we'll move to GPU later)
+        self.lm = loaders.get_moshi_lm(moshi_weight, device=self.cpu_device, cpu_offload=False)
         self.lm.eval()
-        print("Moshi loaded")
+        print("Moshi loaded to CPU")
 
-        # Download voice prompts
+        # Download and extract voice prompts
         print("Loading voice prompts...")
         voices_tgz = hf_hub_download(hf_repo, "voices.tgz")
         voices_tgz = Path(voices_tgz)
@@ -177,7 +181,44 @@ class PersonaPlexService:
                 tar.extractall(path=voices_tgz.parent)
         print(f"Voice prompts ready at {self.voice_prompt_dir}")
 
-        # Create ServerState
+        # Commit volume to persist cached model weights
+        volume.commit()
+
+        print("=" * 60)
+        print("CPU snapshot phase complete - snapshot will be captured now")
+        print("=" * 60)
+
+    @modal.enter(snap=False)
+    def transfer_to_gpu(self):
+        """
+        Transfer models to GPU - runs AFTER snapshot restore.
+
+        This method runs every time a container starts (from snapshot).
+        It transfers the pre-loaded models from CPU to GPU and initializes
+        CUDA-dependent components. This is much faster than loading from disk.
+        """
+        import torch
+        import asyncio
+
+        print("=" * 60)
+        print("POST-RESTORE: Transferring models to GPU...")
+        print("=" * 60)
+
+        # Set up GPU device
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"Target device: {self.device}")
+
+        # Transfer models to GPU
+        print("Transferring Mimi to GPU...")
+        self.mimi = self.mimi.to(self.device)
+        self.other_mimi = self.other_mimi.to(self.device)
+        print("Mimi transferred to GPU")
+
+        print("Transferring Moshi LM to GPU...")
+        self.lm = self.lm.to(self.device)
+        print("Moshi LM transferred to GPU")
+
+        # Create LMGen (must happen after GPU transfer)
         from moshi.models import LMGen
 
         self.frame_size = int(self.mimi.sample_rate / self.mimi.frame_rate)
@@ -198,13 +239,13 @@ class PersonaPlexService:
         # Create async lock for thread safety
         self.lock = asyncio.Lock()
 
-        # Warmup
-        print("Warming up models...")
+        # Warmup to initialize CUDA kernels
+        print("Warming up CUDA kernels...")
         self._warmup()
 
-        # Commit volume to persist cached models
-        volume.commit()
-        print("PersonaPlex ready!")
+        print("=" * 60)
+        print("PersonaPlex ready! (restored from snapshot + GPU transfer)")
+        print("=" * 60)
 
     def _warmup(self):
         """Run warmup inference to initialize CUDA kernels."""
