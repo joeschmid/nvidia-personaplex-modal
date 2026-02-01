@@ -139,7 +139,8 @@ class PersonaPlexService:
         print("SNAPSHOT PHASE: Loading models to CPU for snapshotting...")
         print("=" * 60)
 
-        self.auth_password = _get_auth_password()
+        # NOTE: Do NOT read secrets here - they may not be available during snapshot
+        # and would be baked into the snapshot. Read secrets in snap=False method.
 
         # Use CPU for initial loading (will transfer to GPU after snapshot restore)
         self.cpu_device = torch.device("cpu")
@@ -203,6 +204,9 @@ class PersonaPlexService:
         print("=" * 60)
         print("POST-RESTORE: Transferring models to GPU...")
         print("=" * 60)
+
+        # Read secrets AFTER snapshot restore (secrets aren't available during snapshot)
+        self.auth_password = _get_auth_password()
 
         # Set up GPU device
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
